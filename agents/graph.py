@@ -11,7 +11,7 @@ from typing import Literal
 import openai
 
 from langgraph.graph import StateGraph, START, END
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 from langgraph.prebuilt import ToolNode
 from langchain_openai import ChatOpenAI
 
@@ -54,7 +54,7 @@ async def intent_router(state: AgentState) -> dict:
     - RAG_SEARCH: Questions about documents, policies, notes, unstructured data.
     - GRAPH_QUERY: Questions about relationships (who reports to who, ticket assignments, dependencies).
     - SQL_QUERY: Questions about exact numbers (ARR, budgets, headcount) or tabular data.
-    - GENERAL: General conversational questions.
+    - GENERAL: General conversational questions (greetings, off-topic chat).
     Reply with ONLY the category string.
     """
     
@@ -69,6 +69,10 @@ async def intent_router(state: AgentState) -> dict:
             raise ValueError("Empty response received from the AI model.")
             
         intent = response.content.strip().upper()
+        # Fallback to GENERAL if returned intent is unexpected
+        if intent not in ["RAG_SEARCH", "GRAPH_QUERY", "SQL_QUERY", "GENERAL"]:
+            intent = "GENERAL"
+            
         return {"current_intent": intent}
     except openai.AuthenticationError as e:
         logger.error(f"OpenRouter Authentication Error in router: {e}")
@@ -84,13 +88,27 @@ async def intent_router(state: AgentState) -> dict:
         return {"current_intent": "GENERAL", "errors": [str(e)]}
 
 
+def route_intent(state: AgentState) -> Literal["tool_planner", "synthesize"]:
+    """Fast-path routing based on intent router decision."""
+    intent = state.get("current_intent")
+    if intent == "GENERAL":
+        return "synthesize"
+    return "tool_planner"
+
+
 async def tool_execution_planner(state: AgentState) -> dict:
     """
     Constructs the appropriate tool call if needed, or replies directly.
     Uses OpenRouter to autonomously decide with error handling.
     """
     tenant_id = state["tenant_id"]
-    last_user_msg = [m for m in state["messages"] if isinstance(m, HumanMessage)][-1].content
+    messages = state["messages"]
+    errors = list(state.get("errors") or [])
+    
+    # Detect if the last message was a tool error and log it
+    if messages and isinstance(messages[-1], ToolMessage) and messages[-1].content.startswith("Error"):
+        errors.append("Self-Correction Retry")
+        logger.info(f"Self-correction loop triggered for tenant {tenant_id}. Last error: {messages[-1].content}")
     
     sys_prompt = f"""
     You are SentinelOS, an enterprise digital twin assistant. 
@@ -102,21 +120,23 @@ async def tool_execution_planner(state: AgentState) -> dict:
       - `query_knowledge_graph_tool` for relationships, reporting lines, dependencies, and complex connections.
       - `search_documents_tool` for document content, policies, compliance questions, or text search.
     - If the query is a simple greeting (e.g. "hii", "hello") or a general question, reply directly and DO NOT call any tools.
+
+    If you previously made a tool call and received an error, analyze the error message and correct your query (e.g. ensure SQL/Cypher syntax is valid and includes the correct tenant_id parameter).
     """
     
     try:
         llm = get_chat_model()
         llm_with_tools = llm.bind_tools(agent_tools)
         
+        # Pass full message history so the model sees past tool calls and errors
         response = await llm_with_tools.ainvoke([
-            SystemMessage(content=sys_prompt),
-            HumanMessage(content=last_user_msg)
-        ])
+            SystemMessage(content=sys_prompt)
+        ] + list(messages))
         
         if not response or (not response.content and not response.tool_calls):
             raise ValueError("Empty response received from the AI model.")
             
-        return {"messages": [response]}
+        return {"messages": [response], "errors": errors}
     except openai.AuthenticationError as e:
         logger.error(f"OpenRouter Authentication Error in tool planner: {e}")
         return {"messages": [AIMessage(content="Error: Invalid OpenRouter API Key.")], "errors": ["Invalid OpenRouter API Key."]}
@@ -142,6 +162,24 @@ def should_continue(state: AgentState) -> Literal["tools", "__end__"]:
     return "__end__"
 
 
+def check_tool_errors(state: AgentState) -> Literal["tool_planner", "synthesize"]:
+    """
+    Check if the last tool execution failed.
+    If yes, and we haven't retried yet, route back to 'tool_planner' to self-correct.
+    Otherwise, proceed to 'synthesize'.
+    """
+    messages = state["messages"]
+    errors = state.get("errors") or []
+    
+    if messages and isinstance(messages[-1], ToolMessage):
+        if messages[-1].content.startswith("Error"):
+            retry_count = sum(1 for err in errors if "Self-Correction" in err)
+            if retry_count < 1:
+                return "tool_planner"
+                
+    return "synthesize"
+
+
 async def synthesize_response(state: AgentState) -> dict:
     """
     Synthesize the final answer using the retrieved tool outputs with error handling.
@@ -157,7 +195,7 @@ async def synthesize_response(state: AgentState) -> dict:
         elif isinstance(msg, AIMessage):
             content = msg.content or "(Executed Tool)"
             formatted_messages.append(AIMessage(content=content))
-        else: # ToolMessage
+        elif isinstance(msg, ToolMessage):
             formatted_messages.append(SystemMessage(content=f"Tool Result: {msg.content}"))
             
     try:
@@ -192,12 +230,25 @@ def build_agent_graph() -> StateGraph:
     workflow = StateGraph(AgentState)
     
     # Add nodes
+    workflow.add_node("router", intent_router)
     workflow.add_node("tool_planner", tool_execution_planner)
     workflow.add_node("tools", tool_node)
     workflow.add_node("synthesize", synthesize_response)
     
-    # Add edges - Start directly at the planner to save 1 LLM call
-    workflow.add_edge(START, "tool_planner")
+    # Set entry point
+    workflow.add_edge(START, "router")
+    
+    # Conditional edge from router: fast-path for conversational queries
+    workflow.add_conditional_edges(
+        "router",
+        route_intent,
+        {
+            "synthesize": "synthesize",
+            "tool_planner": "tool_planner"
+        }
+    )
+    
+    # Routing from tool planner
     workflow.add_conditional_edges(
         "tool_planner",
         should_continue,
@@ -206,7 +257,17 @@ def build_agent_graph() -> StateGraph:
             "__end__": END
         }
     )
-    workflow.add_edge("tools", "synthesize")
+    
+    # Routing from tools: retry self-correction loop on errors
+    workflow.add_conditional_edges(
+        "tools",
+        check_tool_errors,
+        {
+            "tool_planner": "tool_planner",
+            "synthesize": "synthesize"
+        }
+    )
+    
     workflow.add_edge("synthesize", END)
     
     return workflow.compile()

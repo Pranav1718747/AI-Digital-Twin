@@ -61,8 +61,8 @@ class VectorStoreManager:
         collections = client.get_collections()
         
         if any(c.name == COLLECTION_NAME for c in collections.collections):
-            client.delete_collection(COLLECTION_NAME) # We recreate it to update dimension to 1536
-            logger.info("Deleted existing collection to update dimensions.")
+            logger.info(f"Qdrant collection {COLLECTION_NAME} already exists. Skipping creation.")
+            return
             
         client.create_collection(
             collection_name=COLLECTION_NAME,
@@ -79,17 +79,26 @@ class VectorStoreManager:
 
     @classmethod
     async def generate_embeddings(cls, texts: List[str]) -> List[List[float]]:
-        """Generate vector embeddings for a list of texts using OpenRouter."""
+        """
+        Generate vector embeddings for a list of texts using OpenRouter.
+        Processes in batches of 16 to prevent request timeouts and rate limits.
+        """
         if not texts:
             return []
             
         client = get_openai_client()
+        batch_size = 16
+        all_embeddings = []
+        
         try:
-            response = await client.embeddings.create(
-                input=texts,
-                model=settings.EMBEDDING_MODEL
-            )
-            return [data.embedding for data in response.data]
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i:i + batch_size]
+                response = await client.embeddings.create(
+                    input=batch,
+                    model=settings.EMBEDDING_MODEL
+                )
+                all_embeddings.extend([data.embedding for data in response.data])
+            return all_embeddings
         except Exception as e:
             logger.error(f"Failed to generate embeddings: {e}")
             raise

@@ -14,8 +14,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark">
-      <body className="bg-background text-foreground min-h-screen flex antialiased selection:bg-primary selection:text-white">
+    <html lang="en" className="dark" suppressHydrationWarning>
+      <body className="bg-background text-foreground min-h-screen flex antialiased selection:bg-primary selection:text-white" suppressHydrationWarning>
         <Providers>
           {/* Dynamic Sidebar */}
           <Sidebar />

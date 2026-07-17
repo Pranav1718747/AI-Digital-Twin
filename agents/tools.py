@@ -7,6 +7,7 @@ vector space (Qdrant), or relational store (Postgres) based on the user's intent
 """
 
 import logging
+import re
 from typing import Dict, Any, List, Optional
 from langchain_core.tools import tool
 
@@ -16,6 +17,15 @@ from backend.app.database import AsyncSessionLocal
 from sqlalchemy import text
 
 logger = logging.getLogger("sentinel.agents.tools")
+
+# Strict regex patterns for write-blocking
+BLOCKED_CYPHER_PATTERN = re.compile(
+    r"\b(CREATE|MERGE|SET|DELETE|REMOVE|DROP|DETACH)\b", re.IGNORECASE
+)
+
+BLOCKED_SQL_PATTERN = re.compile(
+    r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|GRANT|REVOKE|TRUNCATE|CREATE)\b", re.IGNORECASE
+)
 
 
 @tool
@@ -39,7 +49,9 @@ async def search_documents_tool(query: str, tenant_id: str, top_k: int = 3) -> s
             if 'file_name' in metadata:
                 formatted += f"Source: {metadata['file_name']}\n"
             formatted += "\n"
-        return formatted
+            
+        # Truncate response payload to prevent context window overflow
+        return formatted[:4000]
     except Exception as e:
         logger.error(f"Error in search_documents_tool: {e}")
         return f"Error executing document search: {e}"
@@ -50,6 +62,7 @@ def query_knowledge_graph_tool(cypher_query: str, tenant_id: str) -> str:
     """
     Execute a read-only Cypher query against the Neo4j knowledge graph.
     Use this to find relationships between employees, departments, projects, and tickets.
+    
     IMPORTANT: The cypher query MUST include `tenant_id = $tenant_id` in its WHERE clause
     for security isolation. Do not attempt to write or mutate data.
 
@@ -66,11 +79,21 @@ def query_knowledge_graph_tool(cypher_query: str, tenant_id: str) -> str:
       - (e)-[:ASSIGNED_TO]->(t)
       - (t)-[:PART_OF]->(p)
       - (e)-[:MANAGES_ACCOUNT]->(c)
+
+    Few-Shot Examples:
+    1. Find John's direct reports:
+       MATCH (e:Employee)-[:REPORTS_TO]->(m:Employee {first_name: 'John'}) WHERE e.tenant_id = $tenant_id RETURN e.first_name, e.last_name
+    2. Find projects assigned to the 'Engineering' department:
+       MATCH (d:Department {name: 'Engineering'})<-[:BELONGS_TO]-(e:Employee)-[:ASSIGNED_TO]->(t:Ticket)-[:PART_OF]->(p:Project) WHERE d.tenant_id = $tenant_id RETURN DISTINCT p.name
     """
     try:
-        # Basic safeguard against malicious writes
-        if any(keyword in cypher_query.upper() for keyword in ["CREATE", "MERGE", "SET", "DELETE", "REMOVE", "DROP"]):
+        # Enforce read-only constraint using strict regex
+        if BLOCKED_CYPHER_PATTERN.search(cypher_query):
             return "Error: Only read-only (MATCH/RETURN) queries are permitted."
+
+        # Enforce tenant isolation constraint
+        if "$tenant_id" not in cypher_query:
+            return "Error: Cypher query must strictly filter by tenant_id using '$tenant_id'."
             
         with Neo4jManager.get_session() as session:
             result = session.run(cypher_query, {"tenant_id": tenant_id})
@@ -79,7 +102,7 @@ def query_knowledge_graph_tool(cypher_query: str, tenant_id: str) -> str:
             if not records:
                 return "No matching relationships found in the knowledge graph."
                 
-            return str(records)
+            return str(records)[:4000]
     except Exception as e:
         logger.error(f"Error in query_knowledge_graph_tool: {e}")
         return f"Error executing graph query: {e}"
@@ -90,6 +113,7 @@ async def query_relational_db_tool(sql_query: str, tenant_id: str) -> str:
     """
     Execute a read-only SQL query against the PostgreSQL database.
     Use this for aggregations, exact financial metrics (ARR, budgets), and strict entity lookups.
+    
     IMPORTANT: You MUST ensure the query filters by `tenant_id` using parameterized queries.
     The parameter name is :tenant_id.
 
@@ -99,21 +123,30 @@ async def query_relational_db_tool(sql_query: str, tenant_id: str) -> str:
     - projects (id UUID PRIMARY KEY, tenant_id UUID, name VARCHAR, jira_project_key VARCHAR, health_score NUMERIC, target_completion_date DATE)
     - tickets (id UUID PRIMARY KEY, project_id UUID FOREIGN KEY projects.id, ticket_key VARCHAR, title VARCHAR, status VARCHAR, story_points INTEGER, assigned_employee_id UUID FOREIGN KEY employees.id, target_date DATE)
     - customers (id UUID PRIMARY KEY, tenant_id UUID, company_name VARCHAR, domain VARCHAR, contract_value_arr NUMERIC, health_score NUMERIC, assigned_csm_id UUID FOREIGN KEY employees.id, is_active BOOLEAN)
+
+    Few-Shot Examples:
+    1. Count active employees:
+       SELECT COUNT(*) FROM employees WHERE tenant_id = :tenant_id AND status = 'active'
+    2. Calculate total budget for all departments:
+       SELECT SUM(budget_limit_eur) FROM departments WHERE tenant_id = :tenant_id
     """
     try:
-        if any(keyword in sql_query.upper() for keyword in ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "GRANT"]):
+        # Enforce read-only constraint using strict regex
+        if BLOCKED_SQL_PATTERN.search(sql_query):
             return "Error: Only read-only (SELECT) queries are permitted."
 
+        # Enforce tenant isolation constraint
+        if ":tenant_id" not in sql_query:
+            return "Error: SQL query must strictly filter by tenant_id using ':tenant_id'."
+
         async with AsyncSessionLocal() as session:
-            # We inject tenant_id as a bind parameter to prevent cross-tenant access.
-            # The LLM is expected to use :tenant_id in its query string.
             result = await session.execute(text(sql_query), {"tenant_id": tenant_id})
             rows = result.mappings().all()
             
             if not rows:
                 return "No matching records found in the database."
                 
-            return str([dict(row) for row in rows])
+            return str([dict(row) for row in rows])[:4000]
     except Exception as e:
         logger.error(f"Error in query_relational_db_tool: {e}")
         return f"Error executing SQL query: {e}"

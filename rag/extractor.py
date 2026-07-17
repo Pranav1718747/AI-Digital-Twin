@@ -82,21 +82,54 @@ class DocumentExtractor:
         return chunks
 
     @staticmethod
-    def chunk_text(text: str, max_chunk_size: int = 1000, overlap: int = 100) -> List[str]:
+    def chunk_text(text: str, max_chunk_size: int = 500, overlap: int = 50) -> List[str]:
         """
-        A naive text splitter for splitting large blocks of text into smaller chunks.
-        Used if page-level extraction yields chunks that are too large.
+        A recursive character text splitter that splits on paragraph boundaries (\\n\\n),
+        newlines (\\n), spaces ( ), and characters to ensure logical blocks/sentences
+        stay intact while respecting max_chunk_size and overlap constraints.
         """
         if not text:
             return []
-            
-        words = text.split()
-        chunks = []
+
+        separators = ["\n\n", "\n", " ", ""]
         
-        i = 0
-        while i < len(words):
-            chunk_words = words[i:i + max_chunk_size]
-            chunks.append(" ".join(chunk_words))
-            i += max_chunk_size - overlap
+        def split_text(text_to_split: str, current_seps: List[str]) -> List[str]:
+            if len(text_to_split) <= max_chunk_size:
+                return [text_to_split]
             
-        return chunks
+            if not current_seps:
+                # No more separators, hard split by length
+                return [text_to_split[i:i + max_chunk_size] for i in range(0, len(text_to_split), max_chunk_size - overlap)]
+                
+            separator = current_seps[0]
+            splits = text_to_split.split(separator)
+            
+            final_chunks = []
+            current_chunk = ""
+            
+            for part in splits:
+                if len(part) > max_chunk_size:
+                    # If a single part exceeds max size, split recursively with remaining separators
+                    if current_chunk:
+                        final_chunks.append(current_chunk.strip())
+                        current_chunk = ""
+                    final_chunks.extend(split_text(part, current_seps[1:]))
+                else:
+                    proposed = current_chunk + (separator if current_chunk else "") + part
+                    if len(proposed) <= max_chunk_size:
+                        current_chunk = proposed
+                    else:
+                        if current_chunk:
+                            final_chunks.append(current_chunk.strip())
+                        # Enforce overlap by keeping end of previous chunk if possible
+                        if overlap > 0 and len(current_chunk) > overlap:
+                            current_chunk = current_chunk[-overlap:] + (separator if current_chunk else "") + part
+                        else:
+                            current_chunk = part
+            
+            if current_chunk:
+                final_chunks.append(current_chunk.strip())
+                
+            return [c for c in final_chunks if c]
+
+        return split_text(text, separators)
