@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Network, Workflow, Search, Users, Settings, LogOut, Activity, TrendingUp, LineChart, Megaphone, FolderKanban, Headphones, Cpu, Heart } from "lucide-react";
+import { LayoutDashboard, Network, Workflow, Search, Settings, LogOut, Activity, TrendingUp, LineChart, Megaphone, FolderKanban, Headphones, Cpu, Heart } from "lucide-react";
 import { motion } from "framer-motion";
 import { signOut } from "next-auth/react";
 
@@ -11,7 +11,6 @@ const navItems = [
   { name: "Knowledge Graph", href: "/graph", icon: Network },
   { name: "SOP Workflows", href: "/workflows", icon: Workflow },
   { name: "Agent Search", href: "/search", icon: Search },
-  { name: "Employees", href: "/employees", icon: Users },
   { name: "Employee Simulator", href: "/employees-simulator", icon: Activity },
   { name: "Finance Simulator", href: "/finance-simulator", icon: TrendingUp },
   { name: "Sales Simulator", href: "/sales-simulator", icon: LineChart },
