@@ -1,9 +1,16 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { Plus, Play, Save, Cpu, FileText, CheckSquare, LogOut, Info, Settings, X } from "lucide-react";
+import { Plus, Play, Save, Cpu, FileText, CheckSquare, LogOut, Info, Settings, X, FolderOpen } from "lucide-react";
 import { useState, useCallback } from "react";
 import { useNodesState, useEdgesState, addEdge, Connection, Edge, Node } from '@xyflow/react';
+
+import { useSOPManager } from "@/hooks/useSOPManager";
+import { SOPManagerDrawer } from "@/components/sop/SOPManagerDrawer";
+import { SaveSOPModal } from "@/components/sop/SaveSOPModal";
+import { DeleteSOPDialog } from "@/components/sop/DeleteSOPDialog";
+import { RenameSOPDialog } from "@/components/sop/RenameSOPDialog";
+import { SOP } from "@/services/sopService";
 
 // React Flow requires window, dynamically import
 const WorkflowBuilder = dynamic(() => import("@/components/WorkflowBuilder"), {
@@ -44,6 +51,13 @@ export default function WorkflowsPage() {
   const [isSimulating, setIsSimulating] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
+  const { sops, activeSopId, saveSOP, updateActiveSOP, renameSOP, deleteSOP, loadSOP, clearActiveSOP } = useSOPManager();
+  
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
+  const [sopToDelete, setSopToDelete] = useState<SOP | null>(null);
+  const [sopToRename, setSopToRename] = useState<SOP | null>(null);
+
   // Custom actions list state
   const [customActions, setCustomActions] = useState<CustomAction[]>([]);
   const [showAddForm, setShowAddForm] = useState(false);
@@ -66,11 +80,17 @@ export default function WorkflowsPage() {
       { id: '1', position: { x: 250, y: 50 }, data: { label: 'Start' }, type: 'input' },
     ]);
     setEdges([]);
+    clearActiveSOP();
     showToast("✨ Started a new workflow canvas!");
   };
 
   const handleSaveSOP = () => {
-    showToast("💾 Standard Operating Procedure saved successfully!");
+    if (activeSopId) {
+      updateActiveSOP(nodes, edges, { x: 0, y: 0, zoom: 1 });
+      showToast("💾 SOP updated successfully!");
+    } else {
+      setIsSaveModalOpen(true);
+    }
   };
 
   const handleSimulateRun = () => {
@@ -267,6 +287,13 @@ export default function WorkflowsPage() {
             {isSimulating ? 'Running...' : 'Simulate Run'}
           </button>
           <button 
+            onClick={() => setIsDrawerOpen(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-slate-500/20 hover:bg-slate-500/30 text-slate-300 transition-colors text-sm font-medium rounded-lg border border-slate-500/30"
+          >
+            <FolderOpen size={16} />
+            My SOPs
+          </button>
+          <button 
             onClick={handleSaveSOP}
             className="flex items-center gap-2 px-4 py-2 bg-pink-500/20 hover:bg-pink-500/30 text-pink-300 transition-colors text-sm font-medium rounded-lg border border-pink-500/30"
           >
@@ -436,6 +463,52 @@ export default function WorkflowsPage() {
           />
         </div>
       </div>
+      
+      <SOPManagerDrawer
+        isOpen={isDrawerOpen}
+        onClose={() => setIsDrawerOpen(false)}
+        sops={sops}
+        onLoad={(sop) => {
+          if (confirm("Loading this SOP will replace the current unsaved workflow. Continue?")) {
+            setNodes(sop.nodes);
+            setEdges(sop.edges);
+            loadSOP(sop.id);
+            showToast(`📂 Loaded SOP: ${sop.name}`);
+          }
+        }}
+        onRename={(sop) => setSopToRename(sop)}
+        onDelete={(sop) => setSopToDelete(sop)}
+      />
+
+      <SaveSOPModal
+        isOpen={isSaveModalOpen}
+        onClose={() => setIsSaveModalOpen(false)}
+        onSave={(name, desc) => {
+          saveSOP(name, desc, nodes, edges, { x: 0, y: 0, zoom: 1 });
+          showToast("💾 SOP Saved Successfully");
+        }}
+      />
+
+      <DeleteSOPDialog
+        isOpen={!!sopToDelete}
+        onClose={() => setSopToDelete(null)}
+        sop={sopToDelete}
+        onConfirm={(sop) => {
+          deleteSOP(sop.id);
+          showToast("🗑️ SOP deleted successfully");
+        }}
+      />
+
+      <RenameSOPDialog
+        isOpen={!!sopToRename}
+        onClose={() => setSopToRename(null)}
+        sop={sopToRename}
+        onRename={(sop, newName) => {
+          renameSOP(sop.id, newName);
+          showToast("✏️ SOP renamed successfully");
+        }}
+      />
+
     </div>
   );
 }
