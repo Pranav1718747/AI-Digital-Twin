@@ -263,23 +263,24 @@ python -m venv venv
 source venv/bin/activate  # On Windows use: venv\Scripts\activate
 
 # Install dependencies
-pip install -r ../requirements.txt
+pip install -r requirements.txt
 
+# Stay in the project root to ensure Python imports resolve correctly
 # Start the uvicorn development server on port 8000
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ### 5. Running the Asynchronous Workers
 The Celery workers must run in a separate terminal process to synchronize the Digital Twin graph state.
 ```bash
-# In a NEW terminal window:
-cd digital_twin
+# In a NEW terminal window, make sure you are in the project root:
+cd /Users/dakshabordekar/AI-Digital-Twin
 
-# Activate the same virtual environment
-source ../backend/venv/bin/activate
+# Activate the virtual environment
+source venv/bin/activate
 
-# Launch the Celery worker pool
-celery -A app.celery_app worker --loglevel=info -Q graph_sync_queue,risk_analysis_queue -c 4
+# Launch the Celery worker pool from the project root
+celery -A digital_twin.app.celery_app worker --loglevel=info -Q graph_sync_queue,risk_analysis_queue -c 4
 ```
 
 ### 6. Starting the Frontend Presentation Tier
