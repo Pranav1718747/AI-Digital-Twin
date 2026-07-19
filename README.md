@@ -144,7 +144,7 @@ graph LR
     E --> G[Markdown Buffer Compilation]
     F --> G
     G --> H[Semantic Chunking]
-    H --> I[Embedding Generation (text-embed-3)]
+    H --> I["Embedding Generation (text-embed-3)"]
     I --> J[(Qdrant Vector Upsert)]
 ```
 
