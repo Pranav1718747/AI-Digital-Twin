@@ -10,7 +10,7 @@ echo "Starting SentinelOS database bootstrap pipeline..."
 cd "$(dirname "$0")/.."
 
 # 1. Export database environment configurations (adjust if you changed .env)
-export PGPASSWORD="secure_pass"
+export PGPASSWORD=${PGPASSWORD}
 
 # 2. Wait for PostgreSQL service port to accept connections (skips if pg_isready not installed locally)
 if command -v pg_isready &> /dev/null; then
